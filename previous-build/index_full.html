@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Hindsight</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<style>
+  body { font-family: ui-sans-serif, system-ui, -apple-system, sans-serif; }
+  .chip { display:inline-flex; align-items:center; gap:.35rem; padding:.3rem .7rem; border-radius:9999px; font-size:.85rem; }
+  .spinner { border: 3px solid #e5e7eb; border-top-color: #4f46e5; border-radius: 50%; width: 1.25rem; height: 1.25rem; animation: spin 0.7s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body class="bg-slate-50 text-slate-900 min-h-screen">
+
+<div class="max-w-5xl mx-auto px-4 py-10">
+
+  <header class="mb-8">
+    <h1 class="text-3xl font-bold tracking-tight">Hindsight</h1>
+    <p class="text-slate-500 mt-1">Type an investment thesis. See who would have won it in 2019–2020, and who's matching it right now.</p>
+  </header>
+
+  <!-- Step 1: thesis input -->
+  <section class="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 mb-6">
+    <label class="block text-sm font-medium text-slate-700 mb-2">Your investment thesis</label>
+    <div class="flex gap-2">
+      <input id="thesisInput" type="text" placeholder="e.g. UK seed-stage fintech"
+        class="flex-1 rounded-lg border border-slate-300 px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+      <button id="resolveBtn" class="bg-indigo-600 hover:bg-indigo-700 text-white font-medium px-5 py-2.5 rounded-lg">
+        Match
+      </button>
+    </div>
+    <div id="resolveStatus" class="mt-3 text-sm text-slate-500"></div>
+
+    <div id="resolvedBox" class="mt-4 hidden">
+      <div class="text-sm text-slate-500 mb-2">Matched as:</div>
+      <div id="resolvedChips" class="flex flex-wrap gap-2 mb-4"></div>
+      <div id="resolveWarnings" class="text-sm text-amber-700 mb-4"></div>
+
+      <label class="block text-sm font-medium text-slate-700 mb-2">Fund to compare against (optional)</label>
+      <input id="fundInput" type="text" placeholder="e.g. LocalGlobe"
+        class="w-full rounded-lg border border-slate-300 px-4 py-2.5 mb-4 focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+
+      <div class="flex gap-3">
+        <button id="analyzeBtn" class="bg-slate-900 hover:bg-black text-white font-medium px-5 py-2.5 rounded-lg flex items-center gap-2">
+          Run 2019–2020 test
+        </button>
+        <button id="todayBtn" class="bg-white border border-slate-300 hover:bg-slate-50 font-medium px-5 py-2.5 rounded-lg">
+          Rank today's matches by momentum
+        </button>
+      </div>
+    </div>
+  </section>
+
+  <!-- Loading -->
+  <div id="loadingBox" class="hidden flex items-center gap-3 text-slate-500 mb-6">
+    <div class="spinner"></div><span id="loadingText">Working…</span>
+  </div>
+
+  <!-- Results: fund performance -->
+  <section id="resultsSection" class="hidden space-y-6">
+
+    <div class="grid grid-cols-3 gap-4">
+      <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-5">
+        <div class="text-slate-500 text-sm">Seed rounds matched</div>
+        <div id="statMatches" class="text-3xl font-bold mt-1">–</div>
+      </div>
+      <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-5">
+        <div class="text-slate-500 text-sm">% reached Series A or later</div>
+        <div id="statPct" class="text-3xl font-bold mt-1">–</div>
+      </div>
+      <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-5">
+        <div class="text-slate-500 text-sm" id="fundCardLabel">Fund backed at seed</div>
+        <div id="statFundBacked" class="text-3xl font-bold mt-1">–</div>
+      </div>
+    </div>
+
+    <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
+      <h2 class="font-semibold text-lg mb-4">Top 5 winners</h2>
+      <canvas id="winnersChart" height="90"></canvas>
+      <div id="winnersTable" class="mt-4 divide-y divide-slate-100"></div>
+    </div>
+
+    <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
+      <h2 class="font-semibold text-lg mb-1">Ones that got away</h2>
+      <p id="missedSubtitle" class="text-sm text-slate-500 mb-4"></p>
+      <div id="missedList" class="divide-y divide-slate-100"></div>
+    </div>
+  </section>
+
+  <!-- Results: today's momentum -->
+  <section id="todaySection" class="hidden space-y-6 mt-6">
+    <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
+      <h2 class="font-semibold text-lg mb-1">Today's matches, ranked by momentum</h2>
+      <p id="todaySubtitle" class="text-sm text-slate-500 mb-4"></p>
+      <div id="todayList" class="divide-y divide-slate-100"></div>
+    </div>
+  </section>
+
+</div>
+
+<script>
+let resolved = null;
+let winnersChart = null;
+
+const $ = (id) => document.getElementById(id);
+
+function setLoading(on, text) {
+  $('loadingBox').classList.toggle('hidden', !on);
+  if (text) $('loadingText').textContent = text;
+}
+
+function money(n) {
+  if (n === null || n === undefined) return '—';
+  if (n >= 1e9) return '$' + (n / 1e9).toFixed(2) + 'bn';
+  if (n >= 1e6) return '$' + (n / 1e6).toFixed(1) + 'm';
+  return '$' + n.toLocaleString();
+}
+
+function familyColor(family) {
+  const map = { industry: 'bg-emerald-100 text-emerald-800', technology: 'bg-sky-100 text-sky-800',
+    sector: 'bg-amber-100 text-amber-800', sub_industry: 'bg-violet-100 text-violet-800' };
+  return map[family] || 'bg-slate-100 text-slate-700';
+}
+
+$('resolveBtn').addEventListener('click', async () => {
+  const thesis = $('thesisInput').value.trim();
+  if (!thesis) return;
+  setLoading(true, 'Matching your thesis to Dealroom filters…');
+  $('resolvedBox').classList.add('hidden');
+  $('resultsSection').classList.add('hidden');
+  $('todaySection').classList.add('hidden');
+  try {
+    const res = await fetch('/api/resolve-thesis', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({thesis})
+    });
+    resolved = await res.json();
+    renderResolved(resolved);
+  } catch (e) {
+    $('resolveStatus').textContent = 'Something went wrong matching that thesis: ' + e;
+  } finally {
+    setLoading(false);
+  }
+});
+
+function renderResolved(r) {
+  const chips = $('resolvedChips');
+  chips.innerHTML = '';
+  if (r.best_location) {
+    chips.innerHTML += `<span class="chip bg-indigo-100 text-indigo-800">📍 ${r.best_location.label} <span class="opacity-60">(id ${r.best_location.value})</span></span>`;
+  } else {
+    chips.innerHTML += `<span class="chip bg-red-100 text-red-800">No location matched</span>`;
+  }
+  (r.best_tags || []).forEach(t => {
+    const family = t.pinned_sub_type || t.source_type || 'sector';
+    chips.innerHTML += `<span class="chip ${familyColor(family)}">🏷 ${t.label} <span class="opacity-60">(${family}, id ${t.value})</span></span>`;
+  });
+
+  const warnBox = $('resolveWarnings');
+  warnBox.innerHTML = (r.warnings || []).map(w => `⚠ ${w}`).join('<br/>');
+
+  $('resolvedBox').classList.remove('hidden');
+}
+
+$('analyzeBtn').addEventListener('click', async () => {
+  if (!resolved || !resolved.best_location || !resolved.best_tags.length) {
+    alert('Need a matched location and tag first.');
+    return;
+  }
+  setLoading(true, 'Pulling 2019–2020 seed rounds and checking what happened next…');
+  $('resultsSection').classList.add('hidden');
+  $('todaySection').classList.add('hidden');
+  try {
+    const body = {
+      location_id: parseInt(resolved.best_location.value),
+      tag_ids: resolved.best_tags.map(t => parseInt(t.value)),
+      fund_name: $('fundInput').value.trim() || null,
+    };
+    const res = await fetch('/api/analyze', {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
+    });
+    if (!res.ok) { const err = await res.json(); throw new Error(err.detail || res.statusText); }
+    const data = await res.json();
+    renderAnalysis(data, body.fund_name);
+  } catch (e) {
+    alert('Analysis failed: ' + e.message);
+  } finally {
+    setLoading(false);
+  }
+});
+
+function renderAnalysis(d, fundName) {
+  $('statMatches').textContent = d.seed_total_matches ?? d.unique_companies;
+  $('statPct').textContent = d.pct_reached_series_a_or_later + '%';
+
+  $('fundCardLabel').textContent = fundName ? `${fundName} backed at seed` : 'Fund comparison';
+  $('statFundBacked').textContent = fundName ? (d.fund_backed_count ?? 0) : '—';
+
+  // winners chart
+  const top5 = d.top_5_winners || [];
+  if (winnersChart) winnersChart.destroy();
+  winnersChart = new Chart($('winnersChart'), {
+    type: 'bar',
+    data: {
+      labels: top5.map(w => w.name),
+      datasets: [{
+        label: 'Latest valuation ($)',
+        data: top5.map(w => w.current_valuation || 0),
+        backgroundColor: top5.map(w => w.fund_backed_at_seed ? '#4f46e5' : '#cbd5e1'),
+      }]
+    },
+    options: {
+      plugins: { legend: { display: false } },
+      scales: { y: { ticks: { callback: (v) => money(v) } } }
+    }
+  });
+
+  $('winnersTable').innerHTML = top5.map(w => `
+    <div class="py-3 flex items-center justify-between">
+      <div>
+        <div class="font-medium">${w.name}</div>
+        <div class="text-xs text-slate-500">${w.reached_series_b_plus ? 'Reached Series B+' : w.reached_series_a ? 'Reached Series A' : 'Seed only'} ${w.is_exited ? '· Exited' : ''}</div>
+      </div>
+      <div class="text-right">
+        <div class="font-semibold">${money(w.current_valuation)}</div>
+        <div class="text-xs ${w.fund_backed_at_seed ? 'text-indigo-600' : 'text-slate-400'}">${w.fund_backed_at_seed ? 'Backed at seed ✓' : ''}</div>
+      </div>
+    </div>`).join('');
+
+  const missed = d.ones_that_got_away || [];
+  $('missedSubtitle').textContent = fundName
+    ? `Winners from this cohort that ${fundName} did not back at seed`
+    : 'Enter a fund name above to see what it missed';
+  $('missedList').innerHTML = missed.map(w => `
+    <div class="py-3 flex items-center justify-between">
+      <div class="font-medium">${w.name}</div>
+      <div class="text-right">
+        <div class="font-semibold">${money(w.current_valuation)}</div>
+        <div class="text-xs text-slate-400">score ${w.score}</div>
+      </div>
+    </div>`).join('') || '<div class="text-slate-400 text-sm py-2">No data yet.</div>';
+
+  $('resultsSection').classList.remove('hidden');
+}
+
+$('todayBtn').addEventListener('click', async () => {
+  if (!resolved || !resolved.best_location || !resolved.best_tags.length) {
+    alert('Need a matched location and tag first.');
+    return;
+  }
+  setLoading(true, "Checking today's matches and momentum…");
+  $('todaySection').classList.add('hidden');
+  try {
+    const body = {
+      location_id: parseInt(resolved.best_location.value),
+      tag_ids: resolved.best_tags.map(t => parseInt(t.value)),
+      months_back: 18,
+    };
+    const res = await fetch('/api/today', {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
+    });
+    if (!res.ok) { const err = await res.json(); throw new Error(err.detail || res.statusText); }
+    const data = await res.json();
+    renderToday(data);
+  } catch (e) {
+    alert('Momentum check failed: ' + e.message);
+  } finally {
+    setLoading(false);
+  }
+});
+
+function renderToday(d) {
+  $('todaySubtitle').textContent =
+    `${d.total_matches ?? d.unique_companies} seed rounds since ${d.cutoff_date} · ranked by headcount growth, traffic growth and hiring activity`;
+  $('todayList').innerHTML = (d.ranked_by_momentum || []).map((c, i) => `
+    <div class="py-3 flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <span class="text-slate-400 text-sm w-5">${i + 1}</span>
+        <div>
+          <div class="font-medium">${c.name}</div>
+          <div class="text-xs text-slate-500">
+            ${c.employee_count_1y_growth != null ? 'headcount ' + c.employee_count_1y_growth.toFixed(0) + '%' : ''}
+            ${c.is_hiring ? '· hiring (' + (c.open_roles ?? 0) + ' roles)' : ''}
+          </div>
+        </div>
+      </div>
+      <div class="font-semibold">${c.momentum_score}</div>
+    </div>`).join('') || '<div class="text-slate-400 text-sm py-2">No matches in this window.</div>';
+  $('todaySection').classList.remove('hidden');
+}
+</script>
+</body>
+</html>
