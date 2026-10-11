@@ -1,0 +1,26 @@
+# Credentials -- never commit.
+# The Dealroom key is issued personally and its terms forbid publishing it
+# or committing it to a public repository. SETUP.txt is listed here too
+# because it carries the client ID in plaintext, and cache/ is listed
+# because _token_cache.json holds a live access token.
+*.env
+.env
+.env.*
+!.env.example
+dealroom-*.env
+SETUP.txt
+
+# Cached Dealroom API responses (regenerated on demand; holds an access token)
+cache/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
