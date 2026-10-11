@@ -1,0 +1,1284 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Hindsight — backtest an investment thesis</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="demo-data.js?v=2"></script>
+<style>
+  /* Deliberately NOT dependent on Tailwind for layout: the venue wifi gets
+     one chance, and a CDN that fails shouldn't take the demo's layout with
+     it. Tailwind is still loaded (per CLAUDE.md). The charts are plain HTML
+     dots and bars, so there is no chart library to fail either. */
+  :root {
+    --paper:      #faf9f6;
+    --paper-2:    #ffffff;
+    --paper-sunk: #f2f0ea;
+    --ink:        #16181c;
+    --ink-2:      #4d5159;
+    --ink-3:      #868a92;
+    --rule:       #e0ddd4;
+    --rule-2:     #c6c2b6;
+    --signal:     #1a5c46;
+    --miss:       #94402a;
+    --accent:     #1b3a6b;
+    --serif: Georgia, "Iowan Old Style", "Palatino Linotype", "Times New Roman", serif;
+    --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html { background: var(--paper); }
+  body {
+    margin: 0; background: var(--paper); color: var(--ink);
+    font-family: var(--sans); font-size: 15px; line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+  .num { font-variant-numeric: tabular-nums lining-nums; }
+  .wrap { max-width: 61rem; margin: 0 auto; padding: 0 2rem; }
+
+  /* ---------- masthead ---------- */
+  .masthead { border-bottom: 1px solid var(--ink); padding: 1.5rem 0 0.75rem; display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+  .wordmark { font-family: var(--serif); font-size: 1.5rem; font-weight: 700; letter-spacing: -0.015em; }
+  .wordmark em { font-style: normal; color: var(--ink-3); }
+  .masthead-meta { font-size: 0.72rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-3); }
+  .standfirst { font-family: var(--serif); font-size: 1.0625rem; color: var(--ink-2); padding: 0.875rem 0 0; margin: 0; text-align: center; }
+
+  /* ---------- thesis input ---------- */
+  .ask { padding: 2rem 0 2.25rem; }
+  body.has-results .ask { border-bottom: 1px solid var(--rule); }
+  .ask > .field-label { text-align: center; }
+  .field-label { font-size: 0.7rem; letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-3); font-weight: 600; margin-bottom: 0.625rem; }
+  .thesis-input {
+    width: 100%; background: var(--paper-2); border: 1px solid var(--rule-2); color: var(--ink);
+    font-family: var(--serif); font-size: 1.1875rem; line-height: 1.45;
+    padding: 0.875rem 1rem; border-radius: 2px; resize: none;
+    transition: border-color .15s, box-shadow .15s;
+  }
+  .thesis-input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(27,58,107,.1); }
+  .thesis-input::placeholder { color: #a8a49a; }
+  .run-row { display: flex; flex-direction: column; align-items: center; gap: .75rem; margin-top: 1rem; }
+  .run-btn {
+    background: var(--ink); color: var(--paper); border: 1px solid var(--ink);
+    font-family: var(--sans); font-size: 0.8125rem; font-weight: 600;
+    letter-spacing: 0.06em; text-transform: uppercase;
+    padding: 0.6875rem 1.375rem; border-radius: 2px; cursor: pointer;
+    transition: background .15s, border-color .15s;
+  }
+  .run-btn:hover:not(:disabled) { background: var(--accent); border-color: var(--accent); }
+  .run-btn:disabled { opacity: .4; cursor: default; }
+  .status { font-size: 0.8125rem; color: var(--ink-2); display: flex; align-items: center; gap: .5rem; }
+  .status:empty { display: none; }
+
+  /* ---------- sections ---------- */
+  .sec { padding: 3rem 0; border-bottom: 1px solid var(--rule); opacity: 0; transform: translateY(12px); transition: opacity .55s ease, transform .55s ease; pointer-events: none; }
+  .sec.visible { opacity: 1; transform: none; pointer-events: auto; }
+  .eyebrow { font-size: 0.7rem; letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-3); font-weight: 600; }
+  .eyebrow span { color: var(--rule-2); margin-right: .625rem; }
+  .sec-title { font-family: var(--serif); font-size: clamp(1.5rem, 3vw, 2.125rem); font-weight: 700; letter-spacing: -0.02em; line-height: 1.15; margin: .5rem 0 0; }
+  .sec-sub { color: var(--ink-2); max-width: 40rem; margin: .625rem 0 0; }
+
+  /* ---------- figure row ---------- */
+  .figs { display: grid; grid-template-columns: repeat(4, 1fr); margin-top: 2rem; border-top: 1px solid var(--ink); }
+  .fig { padding: 1.125rem 1rem 1.25rem; border-right: 1px solid var(--rule); text-align: center; }
+  .fig:last-child { border-right: none; }
+  .fig-n { font-family: var(--serif); font-size: clamp(2rem, 4.4vw, 3rem); font-weight: 700; line-height: 1; letter-spacing: -0.03em; }
+  .fig-l { font-size: 0.8125rem; color: var(--ink-2); margin-top: .5rem; }
+  .fig-note { font-size: 0.75rem; color: var(--ink-3); margin-top: .125rem; }
+
+  /* ---------- takeaway: the one sentence to remember from each section ---------- */
+  .takeaway { font-family: var(--serif); font-size: clamp(1.1875rem, 2.2vw, 1.4375rem); line-height: 1.35; margin: 1rem 0 0; max-width: 42rem; color: var(--ink); }
+  .takeaway b { color: var(--signal); }
+  .takeaway .miss { color: var(--miss); font-weight: 700; }
+
+  /* ---------- dot grid: one dot = one company ---------- */
+  .dot-box { margin-top: 2.25rem; }
+  .chart-h { font-size: 0.7rem; letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-3); font-weight: 600; margin-bottom: .875rem; }
+  .dots { display: grid; grid-template-columns: repeat(auto-fill, 14px); gap: 3px; }
+  .dot { width: 10px; height: 10px; margin: 2px; border-radius: 50%; background: var(--rule-2); }
+  .dot.d-a    { background: #7fb09d; }
+  .dot.d-b    { background: var(--signal); }
+  .dot.d-uni  { background: #0e3023; box-shadow: 0 0 0 3px rgba(26,92,70,.28); }
+  .dot.d-in   { background: var(--signal); box-shadow: 0 0 0 3px rgba(26,92,70,.28); }
+  .dot.d-late { background: var(--miss); box-shadow: 0 0 0 3px rgba(148,64,42,.25); }
+  .legend { display: flex; flex-wrap: wrap; gap: .5rem 1.75rem; margin-top: 1.125rem; font-size: 0.8125rem; color: var(--ink-2); }
+  .legend .lg { display: flex; align-items: center; gap: .5rem; }
+  .legend .sw { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+  .legend b { color: var(--ink); font-variant-numeric: tabular-nums; }
+
+  /* ---------- coverage: the Copper moment ---------- */
+  .late-box { margin-top: 2rem; padding: 1.5rem 1.5rem 1.25rem; background: var(--paper-2); border: 1px solid var(--rule-2); border-left: 3px solid var(--miss); }
+  .tl { display: flex; margin-top: 1.5rem; overflow-x: auto; padding-bottom: .25rem; }
+  .tl-node { flex: 1 0 5.5rem; position: relative; padding-top: 1.375rem; padding-right: .5rem; }
+  .tl-node::before { content: ''; position: absolute; top: 0; left: 0; width: 12px; height: 12px; border-radius: 50%; background: var(--rule-2); z-index: 1; }
+  .tl-node::after { content: ''; position: absolute; top: 5px; left: 12px; right: 0; height: 2px; background: var(--rule-2); }
+  .tl-node:last-child::after { display: none; }
+  .tl-node.t-match::before { background: var(--ink); }
+  .tl-node.t-fund::before { background: var(--miss); box-shadow: 0 0 0 4px rgba(148,64,42,.22); }
+  .tl-node.t-now::before { background: var(--signal); box-shadow: 0 0 0 4px rgba(26,92,70,.22); }
+  .tl-r { font-size: 0.6875rem; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); font-weight: 600; }
+  .tl-y { font-size: 0.8125rem; }
+  .tl-a { font-size: 0.8125rem; color: var(--ink-2); }
+  .tl-tag { font-size: 0.6875rem; font-weight: 700; margin-top: .25rem; color: var(--ink-2); }
+  .t-fund .tl-tag { color: var(--miss); }
+  .t-now .tl-a { font-family: var(--serif); font-size: 1.25rem; font-weight: 700; color: var(--signal); }
+
+  /* ---------- momentum bars ---------- */
+  .mbar { height: 6px; background: var(--paper-sunk); border-radius: 3px; min-width: 5rem; }
+  .mbar i { display: block; height: 100%; background: var(--signal); border-radius: 3px; }
+  .mbar.single i { background: #7fb09d; }
+  .mute { color: var(--ink-3); }
+
+  /* ---------- leaderboard ---------- */
+  .mini { display: flex; flex-wrap: wrap; max-width: 8.5rem; }
+  .mini .dot { width: 8px; height: 8px; margin: 1px; }
+  tr.pick { cursor: pointer; }
+  tr.pick.sel td { background: var(--paper-sunk); }
+  tr.pick .go { color: var(--accent); font-size: 0.75rem; opacity: 0; margin-left: .5rem; white-space: nowrap; }
+  tr.pick:hover .go, tr.pick.sel .go { opacity: 1; }
+  .best { font-size: 0.75rem; color: var(--ink-3); font-weight: 400; margin-top: .125rem; }
+  .sbar { height: 6px; background: var(--paper-sunk); border-radius: 3px; margin-top: .375rem; }
+  .sbar i { display: block; height: 100%; background: var(--signal); border-radius: 3px; }
+
+  /* ---------- progress strip ---------- */
+  .progress { position: sticky; top: 0; z-index: 5; background: var(--paper); border-bottom: 1px solid var(--rule); display: none; gap: 1.5rem; padding: .625rem 0; font-size: 0.75rem; letter-spacing: .06em; text-transform: uppercase; }
+  .progress.on { display: flex; }
+  .progress a { color: var(--ink-3); text-decoration: none; font-weight: 600; border-bottom: 2px solid transparent; padding-bottom: .25rem; }
+  .progress a.cur { color: var(--ink); }
+  .progress a span { color: var(--rule-2); margin-right: .375rem; }
+
+  /* ---------- journeys ---------- */
+  .journey { border-top: 1px solid var(--rule); padding: 1.25rem 0; }
+  .journey:first-child { border-top: 1px solid var(--ink); }
+  .journey-head { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; }
+  .journey-name { font-family: var(--serif); font-size: 1.1875rem; font-weight: 700; }
+  .journey-dom { font-size: 0.75rem; color: var(--ink-3); margin-left: .5rem; font-weight: 400; font-family: var(--sans); }
+  .journey-now { font-size: 0.8125rem; color: var(--ink-2); white-space: nowrap; }
+  .journey-now b { font-family: var(--serif); font-size: 1.0625rem; color: var(--signal); }
+  .track { display: flex; align-items: stretch; margin-top: .875rem; flex-wrap: wrap; row-gap: .5rem; }
+  .stop { border-left: 2px solid var(--rule-2); padding: .25rem .875rem .25rem .625rem; min-width: 5.75rem; }
+  .stop:first-child { border-left-color: var(--ink); }
+  .stop.stop-big { border-left-color: var(--signal); }
+  .stop.stop-matched { border-left-color: var(--ink); background: var(--paper-sunk); }
+  .stop-matched-tag { font-size: 0.625rem; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-2); margin-top: .1875rem; font-weight: 600; }
+  .stop-r { font-size: 0.6875rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-3); font-weight: 600; }
+  .stop-y { font-size: 0.8125rem; margin-top: .125rem; }
+  .stop-a { font-size: 0.8125rem; color: var(--ink-2); }
+  .stop-fund { font-size: 0.6875rem; color: var(--miss); margin-top: .1875rem; font-weight: 600; }
+
+  /* ---------- coverage ---------- */
+  .cover-grid { display: grid; grid-template-columns: 1.5fr 1fr; gap: 2.5rem; margin-top: 2rem; }
+  .cover-stat { font-family: var(--serif); font-size: clamp(2rem, 4.4vw, 2.875rem); font-weight: 700; letter-spacing: -0.03em; line-height: 1.05; }
+  .cover-stat small { font-size: 0.4em; font-weight: 400; color: var(--ink-3); letter-spacing: 0; }
+  .backed-list { margin-top: 1rem; font-size: 0.875rem; }
+  .backed-list div { display: flex; justify-content: space-between; gap: 1rem; padding: .375rem 0; border-bottom: 1px solid var(--rule); }
+  .pull {
+    font-family: var(--serif); font-size: clamp(1.25rem, 2.4vw, 1.625rem); line-height: 1.3;
+    border-left: 3px solid var(--miss); padding: .25rem 0 .25rem 1.25rem; color: var(--ink);
+  }
+  .pull b { color: var(--miss); font-weight: 700; }
+  .pull-note { font-family: var(--sans); font-size: 0.8125rem; color: var(--ink-2); margin-top: .75rem; line-height: 1.5; }
+
+  /* ---------- tables ---------- */
+  table.data { width: 100%; border-collapse: collapse; margin-top: 1.5rem; font-size: 0.875rem; }
+  table.data th {
+    text-align: left; font-size: 0.6875rem; letter-spacing: 0.1em; text-transform: uppercase;
+    color: var(--ink-3); font-weight: 600; padding: 0 .75rem .5rem 0; border-bottom: 1px solid var(--ink);
+  }
+  table.data th.r, table.data td.r { text-align: right; padding-right: 0; }
+  table.data td { padding: .625rem .75rem .625rem 0; border-bottom: 1px solid var(--rule); vertical-align: baseline; }
+  table.data tbody tr:hover td { background: var(--paper-sunk); }
+  .co-name { font-weight: 600; }
+  .val-up { color: var(--signal); font-weight: 600; }
+  .rank { color: var(--ink-3); font-variant-numeric: tabular-nums; width: 1.75rem; }
+  .why { color: var(--ink-2); font-size: 0.8125rem; }
+  .sig { font-size: 0.625rem; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-2); background: var(--paper-sunk); border: 1px solid var(--rule); padding: .125rem .375rem; border-radius: 2px; margin-left: .375rem; white-space: nowrap; }
+
+
+  .sky-box { margin-top: 1.75rem; width: min(1180px, calc(100vw - 2.5rem)); margin-left: calc(50% - min(590px, 50vw - 1.25rem)); }
+  .sky-grid { display: grid; grid-template-columns: 13.5rem minmax(0, 1fr) 13.5rem; gap: 2rem; align-items: center; }
+  .sky-box svg { display: block; overflow: visible; margin: 0 auto; user-select: none; -webkit-user-select: none; }
+  .sky-box svg text { pointer-events: none; }
+  .sky-box .s-initials { fill: var(--paper); font-family: var(--sans); font-weight: 700; }
+  .sky-box .s-logo { opacity: 0; transition: opacity .35s ease; }
+  .sky-box .s-logo.loaded { opacity: 1; }
+  .sky-box .node { transition: transform .28s cubic-bezier(.2, .8, .2, 1), opacity .22s ease; }
+  .sky-box .node.est { opacity: .5; }
+  .sky-box .node.dim { opacity: .1; }
+  .sky-box .node.lit { opacity: 1; }
+  .sky-box .s-badge { stroke: var(--paper); stroke-width: 2; fill: var(--ink); }
+  .sky-box .s-badge.late { fill: var(--miss); }
+  .sky-box .s-hit { fill: transparent; cursor: pointer; }
+  .o-uni { fill: #0e3023; } .o-b { fill: var(--signal); } .o-a { fill: #7fb09d; } .o-none { fill: #c9ddd3; }
+  .dot.d-none { background: #c9ddd3; }
+  .sky-side .chart-h { margin-bottom: .5rem; text-align: center; }
+  .sky-item {
+    display: flex; align-items: center; gap: .625rem; width: 100%; background: none; border: 0;
+    border-bottom: 1px solid var(--rule); padding: .5rem .375rem; text-align: left; cursor: pointer;
+    font: inherit; font-size: 0.8125rem; color: var(--ink); line-height: 1.3; transition: background .15s;
+  }
+  .sky-item:hover, .sky-item.on, .sky-item:focus-visible { background: var(--paper-sunk); outline: none; }
+  .sky-item .lbl { min-width: 0; }
+  .sky-item .lbl small { display: block; font-size: 0.6875rem; color: var(--ink-3); }
+  .sky-item .k { margin-left: auto; font-family: var(--serif); font-weight: 700; font-size: 1.0625rem; font-variant-numeric: tabular-nums; }
+  .sky-item .rk { color: var(--ink-3); font-size: 0.75rem; width: 1rem; font-variant-numeric: tabular-nums; }
+  .sky-item .sw { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+  .sky-item.static { cursor: default; }
+  .sky-item.static:hover { background: none; }
+  .sky-side-note { font-size: 0.6875rem; color: var(--ink-3); margin-top: .5rem; line-height: 1.45; }
+  .sky-note { font-size: 0.75rem; color: var(--ink-3); margin: 1rem auto 0; max-width: 42rem; text-align: center; }
+  @media (max-width: 900px) {
+    .sky-grid { grid-template-columns: minmax(0, 1fr); gap: 1.25rem; }
+    .sky-grid > #sky { order: -1; }
+  }
+  .sky-tip {
+    position: fixed; z-index: 20; pointer-events: none; display: none; max-width: 17rem;
+    background: var(--paper-2); border: 1px solid var(--rule-2);
+    padding: .5rem .75rem; font-size: 0.8125rem; color: var(--ink-2); box-shadow: 0 6px 18px rgba(22,24,28,.08);
+  }
+  .sky-tip b { display: block; font-family: var(--serif); font-size: 0.9375rem; color: var(--ink); }
+  .journey.flash { background: var(--paper-sunk); transition: background .6s; }
+
+  .spinner { width: .8125rem; height: .8125rem; border: 2px solid var(--rule-2); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .fallback { margin-top: 1.5rem; padding: 1.25rem; background: var(--paper-2); border: 1px solid var(--rule-2); border-radius: 2px; }
+  .fallback select { width: 100%; background: var(--paper-2); border: 1px solid var(--rule-2); color: var(--ink); padding: .5rem; border-radius: 2px; font-family: var(--sans); font-size: .875rem; }
+  .hidden { display: none; }
+  footer { padding: 2rem 0 3rem; font-size: 0.75rem; color: var(--ink-3); display: flex; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+  footer div:last-child { font-variant-numeric: tabular-nums; }
+  ::selection { background: #dbe4f0; }
+
+  @media (max-width: 720px) {
+    .wrap { padding: 0 1.25rem; }
+    table.data { display: block; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    table.data th, table.data td { white-space: nowrap; }
+    .progress { overflow-x: auto; white-space: nowrap; gap: 1.125rem; }
+    .progress a { flex: none; }
+    .figs { grid-template-columns: repeat(2, 1fr); }
+    .fig:nth-child(2) { border-right: none; }
+    .cover-grid { grid-template-columns: 1fr; gap: 1.75rem; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="masthead">
+    <div class="wordmark">Hindsight<em>.</em></div>
+    <div class="masthead-meta">Source — Dealroom</div>
+  </header>
+  <p class="standfirst">Every thesis sounds good in a partner meeting. This one runs it against
+    what actually happened: the rounds, the winners, and which funds backed them best.</p>
+
+  <section class="ask">
+    <div class="field-label">Investment thesis and timeframe</div>
+    <textarea id="thesisInput" class="thesis-input" rows="2"
+      placeholder="UK seed-stage fintech, 2019 to 2020"></textarea>
+    <div class="run-row">
+      <button id="runBtn" class="run-btn">See how it played out</button>
+      <div id="statusLine" class="status"></div>
+    </div>
+
+    <div id="fallbackBox" class="fallback hidden">
+      <div id="fallbackReason" style="font-size:.8125rem;color:var(--miss);margin-bottom:1rem"></div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:.75rem">
+        <div><div class="field-label">Location</div><select id="locationSelect"></select></div>
+        <div><div class="field-label">Industry</div><select id="industrySelect"></select></div>
+        <div><div class="field-label">Years</div><select id="yearsSelect"></select></div>
+      </div>
+      <button id="fallbackRunBtn" class="run-btn" style="margin-top:1rem">See how it played out</button>
+    </div>
+  </section>
+
+  <nav id="progress" class="progress" aria-label="Sections">
+    <a href="#sec1" data-s="sec1"><span>01</span>Cohort</a>
+    <a href="#sec2" data-s="sec2"><span>02</span>What happened</a>
+    <a href="#secL" data-s="secL"><span>03</span>Best funds</a>
+    <a href="#sec3" data-s="sec3" id="navCover" style="display:none"><span>04</span>Coverage</a>
+    <a href="#sec4" data-s="sec4"><span>05</span>Today</a>
+  </nav>
+
+  <section id="sec1" class="sec">
+    <div class="eyebrow"><span>01</span>The cohort</div>
+    <h2 id="sec1Title" class="sec-title">&mdash;</h2>
+    <div id="skyBox" class="sky-box hidden">
+      <div class="sky-grid">
+        <aside class="sky-side" id="skyFirms" aria-label="Venture firms ranked by winners backed"></aside>
+        <div id="sky" role="img" aria-label="Every company in the cohort, sized by its valuation today"></div>
+        <aside class="sky-side" id="skyLegend" aria-label="Outcomes"></aside>
+      </div>
+      <p id="skyNote" class="sky-note"></p>
+    </div>
+    <p id="sec1Take" class="takeaway"></p>
+    <p id="sec1Sub" class="sec-sub"></p>
+    <div class="figs">
+      <div class="fig"><div class="fig-n num" id="figMatches">0</div><div class="fig-l">rounds matched</div><div class="fig-note" id="figCompanies"></div></div>
+      <div class="fig"><div class="fig-n num" id="figPct">0%</div><div class="fig-l">reached Series A or later</div><div class="fig-note" id="figPctNote"></div></div>
+      <div class="fig"><div class="fig-n num" id="figUnicorns">0</div><div class="fig-l">now worth $1bn or more</div><div class="fig-note" id="figUniNote"></div></div>
+      <div class="fig"><div class="fig-n num" id="figScore">0</div><div class="fig-l">Power Law score</div><div class="fig-note">10 / 30 / 100 / 20 per company</div></div>
+    </div>
+    <div class="dot-box" id="dotBox">
+      <div class="chart-h" id="cohortDotsH">Every company in the cohort &mdash; one dot each</div>
+      <div id="cohortDots" class="dots" role="img" aria-label="One dot per company, coloured by the furthest stage it reached"></div>
+      <div id="cohortLegend" class="legend"></div>
+    </div>
+  </section>
+
+  <section id="sec2" class="sec">
+    <div class="eyebrow"><span>02</span>What happened next</div>
+    <h2 class="sec-title">The round-by-round record</h2>
+    <p id="sec2Take" class="takeaway"></p>
+    <p class="sec-sub">Every equity round Dealroom has on file for the highest-scoring companies in this
+      cohort, from the round that matched your thesis to where they stand today. Accelerator places and
+      debt facilities are on file too, but sit outside this track.</p>
+    <div id="journeys"></div>
+  </section>
+
+  <section id="secL" class="sec">
+    <div class="eyebrow"><span>03</span>Who backed this best</div>
+    <h2 class="sec-title">The funds that got it right</h2>
+    <p id="secLTake" class="takeaway"></p>
+    <p id="secLSub" class="sec-sub"></p>
+    <table class="data" id="boardTable"></table>
+    <p id="boardNote" class="sec-sub" style="margin-top:1.25rem;font-size:.8125rem;color:var(--ink-3)"></p>
+  </section>
+
+  <section id="sec3" class="sec hidden">
+    <div class="eyebrow"><span>04</span>Coverage</div>
+    <h2 id="sec3Title" class="sec-title">&mdash;</h2>
+    <p id="sec3Take" class="takeaway"></p>
+    <div id="tooLateBox"></div>
+    <div class="cover-grid">
+      <div>
+        <div class="cover-stat num" id="coverStat">&mdash;</div>
+        <div style="font-size:.8125rem;color:var(--ink-2);margin:.375rem 0 1.25rem" id="coverCaption"></div>
+        <div id="coverDots" class="dots" role="img" aria-label="One dot per scoring company, showing which ones the fund backed"></div>
+        <div id="coverLegend" class="legend"></div>
+      </div>
+      <div>
+        <div class="chart-h" id="backedH"></div>
+        <div class="backed-list" id="backedList" style="margin-top:0"></div>
+      </div>
+    </div>
+    <p id="sec3Sub" class="sec-sub" style="margin-top:1.75rem;font-size:.8125rem;color:var(--ink-3)"></p>
+    <table class="data" id="gotAwayTable"></table>
+  </section>
+
+  <section id="sec4" class="sec">
+    <div class="eyebrow"><span>05</span>The same thesis, today</div>
+    <h2 class="sec-title">Who's moving right now</h2>
+    <p id="sec4Take" class="takeaway"></p>
+    <p id="sec4Sub" class="sec-sub"></p>
+    <table class="data" id="momentumTable"></table>
+  </section>
+
+  <footer>
+    <div>Hindsight &mdash; built on the Dealroom API.</div>
+    <div id="footerNote"></div>
+  </footer>
+</div>
+
+<div id="skyTip" class="sky-tip"></div>
+<script>
+const $ = (id) => document.getElementById(id);
+const DEMO_THESIS_TEXT = 'Open banking will create the next wave of UK fintech winners: back UK seed fintech in 2019 and 2020';
+
+function money(n) {
+  if (n === null || n === undefined || n === 0) return '—';
+  const sign = n < 0 ? '-' : ''; n = Math.abs(n);
+  if (n >= 1e9) return sign + '$' + (n / 1e9).toFixed(2) + 'bn';
+  if (n >= 1e6) return sign + '$' + (n / 1e6).toFixed(1) + 'm';
+  if (n >= 1e3) return sign + '$' + Math.round(n / 1e3) + 'k';
+  return sign + '$' + Math.round(n).toLocaleString();
+}
+const esc = (s) => String(s === null || s === undefined ? '' : s).replace(/[&<>"']/g, (c) =>
+  ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+function setStatus(text, spinning) {
+  $('statusLine').innerHTML = text ? (spinning ? '<div class="spinner"></div>' : '') + '<span>' + esc(text) + '</span>' : '';
+}
+/* Deliberately NOT wrapped in requestAnimationFrame. rAF is throttled to a
+   standstill in a backgrounded or unfocused tab, and this ran live with all
+   four sections' content rendered but every one of them still at opacity 0 --
+   a blank page in front of the room. The sections are in the DOM at opacity 0
+   from first paint, so adding the class at any later moment transitions
+   perfectly well on its own; rAF was never buying anything here. */
+const reveal = (id) => { $(id).classList.add('visible'); $('progress').classList.add('on'); document.body.classList.add('has-results'); updateProgress(); };
+/* Highlight the section on screen. Plain scroll maths, not IntersectionObserver
+   or rAF, so it behaves in a backgrounded tab too. */
+function updateProgress() {
+  let cur = '';
+  ['sec1', 'sec2', 'secL', 'sec3', 'sec4'].forEach(function (id) {
+    const el = $(id);
+    if (el.classList.contains('hidden') || !el.classList.contains('visible')) return;
+    if (el.getBoundingClientRect().top < window.innerHeight * 0.4) cur = id;
+  });
+  if (!cur && $('sec1').classList.contains('visible')) cur = 'sec1';
+  Array.prototype.forEach.call(document.querySelectorAll('#progress a'), function (a) {
+    a.classList.toggle('cur', a.dataset.s === cur);
+  });
+}
+window.addEventListener('scroll', updateProgress, { passive: true });
+
+const SHORT_ROUND = { 'Series A': 'Ser A', 'Series B': 'Ser B', 'Series C': 'Ser C', 'Series D': 'Ser D',
+  'Series E': 'Ser E', 'Series F+': 'Ser F+', 'Pre-Seed': 'Pre-seed', 'Seed': 'Seed', 'Growth': 'Growth' };
+
+/* Rank used to break ties WITHIN a date. Dealroom dates rounds to the month,
+   so a seed and the Series A that followed it can both read "2020-1" -- and
+   sorted on date alone the Series A can land first, printing a history in
+   which a company raised its A before its seed. Nothing undermines a
+   round-by-round record faster than that, so same-date rows fall back to
+   stage order. */
+const STAGE_RANK = { 'Pre-Seed': 0, 'Seed': 1, 'Series A': 2, 'Series B': 3, 'Series C': 4,
+  'Series D': 5, 'Series E': 6, 'Series F+': 7, 'Growth': 8, 'Bridge': 9, 'Secondary': 10, 'IPO': 11 };
+
+/* Round types that aren't an equity venture round: an accelerator place and
+   a debt facility are real events, but putting them in a seed-to-Series-C
+   track implies a company raised equity it didn't. They're excluded and the
+   section says so, rather than being quietly folded in as "Other". */
+const NON_EQUITY = { 'SUPPORT PROGRAM': 1, 'LENDING CAPITAL': 1, 'DEBT': 1, 'GRANT': 1 };
+
+function buildTrack(rounds, matchedDate, matchedStage) {
+  const kept = (rounds || []).filter((r) => {
+    const raw = String(r.round_type || '').toUpperCase();
+    if (NON_EQUITY[raw]) return false;
+    return !!(r.standardized_round && r.standardized_round !== 'Other');
+  });
+
+  kept.sort((a, b) => (a.year - b.year) || ((a.month || 0) - (b.month || 0)) ||
+    ((STAGE_RANK[a.standardized_round] === undefined ? 99 : STAGE_RANK[a.standardized_round]) -
+     (STAGE_RANK[b.standardized_round] === undefined ? 99 : STAGE_RANK[b.standardized_round])));
+
+  /* Collapse repeats only WITHIN a calendar year: a round closed in two
+     tranches months apart is one round, but two seeds a year apart are two
+     genuine raises -- and flattening those hid the very round the cohort
+     matched on (Copper's 2019 seed vanished behind its 2018 one). */
+  const out = [];
+  kept.forEach((r) => {
+    const label = r.standardized_round;
+    const prev = out[out.length - 1];
+    // Date alone isn't enough to identify the matched round: Dealroom dates
+    // to the month, so Teya's seed and its Series A are both "2020-1" and
+    // both would get flagged as the round the thesis picked. The stage has
+    // to agree as well.
+    const isMatched = r.date === matchedDate && label === matchedStage;
+    if (prev && prev.label === label && prev.year === r.year) {
+      if (r.amount && !prev.amount) prev.amount = r.amount;
+      if (isMatched) prev.matched = true;
+      return;
+    }
+    out.push({ label: label, year: r.year, amount: r.amount, matched: isMatched });
+  });
+  return out;
+}
+
+/* ---------------- shared: dots + legend ---------------- */
+/* One dot = one company. `parts` is [{n, cls}] in the order they should
+   appear, so the winners lead and the long grey tail trails behind them. */
+function dotsHtml(parts) {
+  return parts.map(function (p) {
+    return new Array(Math.max(p.n, 0) + 1).join('<span class="dot ' + p.cls + '"></span>');
+  }).join('');
+}
+function legendHtml(rows, total) {
+  return rows.filter((r) => r.n > 0).map(function (r) {
+    return '<div class="lg"><span class="sw dot ' + r.cls + '" style="margin:0"></span>' +
+      '<span><b>' + r.n.toLocaleString() + '</b> ' + esc(r.label) +
+      (total ? ' <span class="mute">(' + Math.round(100 * r.n / total) + '%)</span>' : '') + '</span></div>';
+  }).join('');
+}
+const plural = (n, one, many) => (n === 1 ? one : many);
+
+/* ---------------- section 1: the cohort ---------------- */
+function renderCohort(d, labels) {
+  $('sec1Title').textContent = labels.title;
+  $('sec1Sub').textContent = labels.sub;
+  reveal('sec1');
+  // Plain text, no count-up: a number that is still climbing when the room
+  // reads it is a number that looks wrong.
+  $('figMatches').textContent = (d.total_matches === null || d.total_matches === undefined ? d.unique_companies : d.total_matches).toLocaleString();
+  $('figPct').textContent = d.pct_reached_series_a_or_later.toFixed(1) + '%';
+  $('figUnicorns').textContent = d.unicorn_count.toLocaleString();
+  $('figScore').textContent = d.total_score.toLocaleString();
+  $('figCompanies').textContent = d.unique_companies.toLocaleString() + ' distinct companies';
+  const base = d.baseline;
+  $('figPctNote').textContent = base ? 'vs ' + base.pct_reached_series_a_or_later + '% for every ' + String(d.inputs.round_type).toLowerCase() + ' company here' : '';
+  $('figUniNote').textContent = base && d.unique_companies
+    ? (100 * d.unicorn_count / d.unique_companies).toFixed(1) + '% of the group, vs ' + base.pct_unicorn + '% for the market' : '';
+  renderCohortDots(d);
+  skyData = d.companies && d.companies.length ? d : null;
+  $('skyBox').classList.toggle('hidden', !skyData);
+  $('dotBox').classList.toggle('hidden', !!skyData);
+  if (skyData) renderConstellation(skyData);
+}
+
+function renderCohortDots(d) {
+  const b = d.outcome_breakdown, total = d.unique_companies;
+  if (!b || !total) { $('cohortDots').innerHTML = ''; $('cohortLegend').innerHTML = ''; $('sec1Take').innerHTML = ''; return; }
+  const parts = [
+    { n: b.billion_plus,   cls: 'd-uni', label: 'worth $1bn or more today' },
+    { n: b.series_b_plus,  cls: 'd-b',   label: 'reached Series B or later' },
+    { n: b.series_a_only,  cls: 'd-a',   label: 'reached Series A' },
+    { n: b.no_later_round, cls: '',      label: 'no later round on file' },
+  ];
+  $('cohortDots').innerHTML = dotsHtml(parts);
+  $('cohortLegend').innerHTML = legendHtml(parts, total);
+  $('sec1Take').innerHTML = '<span class="miss">' + Math.round(100 * b.no_later_round / total) + '%</span> of these ' +
+    total.toLocaleString() + ' companies never raised another round on file. Only <b>' +
+    b.billion_plus + '</b> ' + plural(b.billion_plus, 'became a unicorn', 'became unicorns') + '.';
+}
+
+let skyData = null;
+const SVGNS = 'http://www.w3.org/2000/svg';
+function svgEl(tag, attrs, text) {
+  const node = document.createElementNS(SVGNS, tag);
+  Object.keys(attrs || {}).forEach(function (k) { if (attrs[k] !== null && attrs[k] !== undefined) node.setAttribute(k, attrs[k]); });
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+const SKY_OUTCOME = { uni: 'o-uni', b: 'o-b', a: 'o-a', none: 'o-none' };
+const SKY_SWATCH = { uni: '#0e3023', b: 'var(--signal)', a: '#7fb09d', none: '#c9ddd3' };
+const BREAKDOWN_KEY = { uni: 'billion_plus', b: 'series_b_plus', a: 'series_a_only', none: 'no_later_round' };
+const SKY_LABEL = { uni: 'Worth $1bn or more today', b: 'Reached Series B or later', a: 'Reached Series A', none: 'No later round on file' };
+const skyOutcome = (c) => (c.is_unicorn ? 'uni' : c.reached_series_b_plus ? 'b' : c.reached_series_a ? 'a' : 'none');
+const logoHref = (img) => (img ? (/^https?:\/\//.test(img) ? img : 'https://' + img) : null);
+const initials = (name) => String(name || '?').replace(/[^\p{L}\p{N} ]/gu, ' ').trim().split(/\s+/).slice(0, 2)
+  .map((w) => w[0]).join('').toUpperCase() || '?';
+const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const ringLabel = (e) => '$' + (e >= 9 ? Math.pow(10, e - 9) + 'bn' : e >= 6 ? Math.pow(10, e - 6) + 'm' : Math.pow(10, e - 3) + 'k');
+const monthYear = (y, m) => (y ? (m ? MONTH_NAMES[m - 1] + ' ' + y : String(y)) : '—');
+
+// Front-chain circle packing (the algorithm behind d3.packSiblings): each circle is placed tangent to the chain in order
+function packCircles(circles) {
+  function place(b, a, c) {
+    const dx = b.x - a.x, dy = b.y - a.y, d2 = dx * dx + dy * dy;
+    if (!d2) { c.x = a.x + c.r; c.y = a.y; return; }
+    let a2 = (a.r + c.r) * (a.r + c.r), b2 = (b.r + c.r) * (b.r + c.r), x, y;
+    if (a2 > b2) {
+      x = (d2 + b2 - a2) / (2 * d2); y = Math.sqrt(Math.max(0, b2 / d2 - x * x));
+      c.x = b.x - x * dx - y * dy; c.y = b.y - x * dy + y * dx;
+    } else {
+      x = (d2 + a2 - b2) / (2 * d2); y = Math.sqrt(Math.max(0, a2 / d2 - x * x));
+      c.x = a.x + x * dx - y * dy; c.y = a.y + x * dy + y * dx;
+    }
+  }
+  const intersects = (a, b) => { const dr = a.r + b.r - 1e-6, dx = b.x - a.x, dy = b.y - a.y; return dr > 0 && dr * dr > dx * dx + dy * dy; };
+  const score = (node) => { const a = node._, b = node.next._, ab = a.r + b.r, dx = (a.x * b.r + b.x * a.r) / ab, dy = (a.y * b.r + b.y * a.r) / ab; return dx * dx + dy * dy; };
+  const n = circles.length;
+  if (!n) return;
+  let a = circles[0]; a.x = 0; a.y = 0;
+  if (n < 2) return;
+  let b = circles[1]; a.x = -b.r; b.x = a.r; b.y = 0;
+  if (n < 3) return;
+  let c = circles[2];
+  place(b, a, c);
+  a = { _: a }; b = { _: b }; c = { _: c };
+  a.next = c.previous = b; b.next = a.previous = c; c.next = b.previous = a;
+  pack: for (let i = 3; i < n; ++i) {
+    place(a._, b._, circles[i]);
+    c = { _: circles[i] };
+    let j = b.next, k = a.previous, sj = b._.r, sk = a._.r;
+    do {
+      if (sj <= sk) {
+        if (intersects(j._, c._)) { b = j; a.next = b; b.previous = a; --i; continue pack; }
+        sj += j._.r; j = j.next;
+      } else {
+        if (intersects(k._, c._)) { a = k; a.next = b; b.previous = a; --i; continue pack; }
+        sk += k._.r; k = k.previous;
+      }
+    } while (j !== k.next);
+    c.previous = a; c.next = b; a.next = b.previous = b = c;
+    let aa = score(a);
+    while ((c = c.next) !== b) { const ca = score(c); if (ca < aa) { a = c; aa = ca; } }
+    b = a.next;
+  }
+}
+
+function skyTip(evt, c) {
+  const tip = $('skyTip');
+  const fundName = skyData.inputs && skyData.inputs.fund_name;
+  const fund = c.fund_backed ? fundName + ' backed it at seed'
+    : c.fund_backed_later ? fundName + ' came in at ' + c.fund_entry_round : '';
+  tip.innerHTML = '<b>' + esc(c.name) + '</b>' +
+    'Seed ' + (c.matched_round_amount ? money(c.matched_round_amount) + ' ' : '') + 'in ' + monthYear(c.matched_year, c.matched_month) + '<br>' +
+    (c.valuation ? 'Valued ' + money(c.valuation) + (c.valuation_estimated ? ' (Dealroom estimate)' : '') + ', ' + monthYear(c.valuation_year, c.valuation_month)
+      : 'No valuation on file') + '<br>' +
+    '<span style="color:var(--ink-3)">' + esc(SKY_LABEL[skyOutcome(c)]) + (c.is_exited ? ', exited' : '') + (fund ? '. ' + esc(fund) : '') + '</span>';
+  tip.style.display = 'block';
+  const w = tip.offsetWidth, h = tip.offsetHeight;
+  let x = evt.clientX + 14, y = evt.clientY + 14;
+  if (x + w > window.innerWidth - 8) x = evt.clientX - w - 14;
+  if (y + h > window.innerHeight - 8) y = evt.clientY - h - 14;
+  tip.style.left = Math.max(8, x) + 'px';
+  tip.style.top = Math.max(8, y) + 'px';
+}
+const hideSkyTip = () => { $('skyTip').style.display = 'none'; };
+
+function openSkyCompany(c) {
+  hideSkyTip();
+  const card = $('journey-' + c.uuid);
+  if (card) {
+    card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    card.classList.add('flash');
+    setTimeout(() => card.classList.remove('flash'), 1600);
+  } else if (c.dealroom_url) {
+    window.open(c.dealroom_url, '_blank', 'noopener');
+  }
+}
+
+function separate(items, fixed) {
+  const cell = 2 * Math.max.apply(null, items.map((p) => p.r).concat([fixed ? fixed.r : 0, 1])) + 2;
+  for (let iter = 0; iter < 80; iter++) {
+    let pushed = false;
+    const grid = new Map();
+    items.forEach(function (p) {
+      const key = Math.floor(p.x / cell) + ',' + Math.floor(p.y / cell);
+      if (!grid.has(key)) grid.set(key, []);
+      grid.get(key).push(p);
+    });
+    items.forEach(function (a, ai) {
+      const gx = Math.floor(a.x / cell), gy = Math.floor(a.y / cell);
+      for (let i = gx - 1; i <= gx + 1; i++) for (let j = gy - 1; j <= gy + 1; j++) {
+        (grid.get(i + ',' + j) || []).forEach(function (b) {
+          if (b.i <= a.i) return;
+          const dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy) || 1, m = a.r + b.r + 1.5;
+          if (d >= m) return;
+          const push = (m - d) / d / 2;
+          a.x -= dx * push; a.y -= dy * push; b.x += dx * push; b.y += dy * push;
+          pushed = true;
+        });
+      }
+    });
+    if (fixed) {
+      items.forEach(function (a) {
+        const dx = a.x - fixed.x, dy = a.y - fixed.y, d = Math.hypot(dx, dy) || 1, m = fixed.r + a.r + 1.5;
+        if (d < m) { a.x = fixed.x + dx / d * m; a.y = fixed.y + dy / d * m; pushed = true; }
+      });
+    }
+    if (!pushed) break;
+  }
+}
+
+function renderConstellation(d) {
+  const root = $('sky'), all = d.companies, fundName = d.inputs && d.inputs.fund_name;
+  const valued = all.filter((c) => c.valuation).sort((a, b) => b.valuation - a.valuation);
+  const unvalued = all.length - valued.length;
+  const width = root.clientWidth || 600, narrow = width < 480;
+  const limit = Math.min(width, 660) / 2 - 4;
+
+  const logs = valued.map((c) => Math.log10(c.valuation));
+  const lo = Math.min.apply(null, logs.concat([6])), hi = Math.max.apply(null, logs.concat([9.5]));
+  const maxRad = narrow ? 30 : 44, minRad = narrow ? 4 : 5, gap = 1.5;
+  const nodes = valued.map(function (c, i) {
+    const t = (Math.log10(c.valuation) - lo) / (hi - lo);
+    return { c: c, order: i, rad: minRad + (maxRad - minRad) * Math.pow(t, 2.4) };
+  });
+  const circles = nodes.map((n) => ({ r: n.rad + gap / 2 }));
+  packCircles(circles);
+  const extent = Math.max.apply(null, circles.map((c) => Math.hypot(c.x, c.y) + c.r).concat([1]));
+  // One uniform scale keeps every circle tangent and every size comparable
+  const scale = Math.min(1.4, limit / extent);
+  const cx = width / 2, cy = extent * scale + 8;
+  nodes.forEach(function (n, i) {
+    n.x = cx + circles[i].x * scale; n.y = cy + circles[i].y * scale; n.rad *= scale;
+    n.state = { dx: 0, dy: 0, k: 1, dim: false };
+  });
+  const byUuid = new Map(nodes.map((n) => [n.c.uuid, n]));
+
+  const s = svgEl('svg', { width: width, height: 2 * extent * scale + 16 });
+  const defs = svgEl('defs');
+  const bubbles = svgEl('g'), hits = svgEl('g');
+  s.appendChild(defs); s.appendChild(bubbles); s.appendChild(hits);
+
+  nodes.slice().reverse().forEach(function (n) {
+    const c = n.c, o = SKY_OUTCOME[skyOutcome(c)], id = 'sky-clip-' + n.order, href = logoHref(c.image);
+    const g = svgEl('g', { id: 'sky-node-' + n.order, class: 'node' + (c.valuation_estimated ? ' est' : ''), 'data-uuid': c.uuid, 'data-rad': n.rad,
+      'data-x': n.x, 'data-y': n.y, 'data-outcome': o });
+    g.style.transformOrigin = n.x + 'px ' + n.y + 'px';
+    defs.appendChild(svgEl('clipPath', { id: id })).appendChild(svgEl('circle', { cx: n.x, cy: n.y, r: n.rad }));
+    g.appendChild(svgEl('circle', { cx: n.x, cy: n.y, r: n.rad, class: o + ' s-placeholder' }));
+    if (n.rad >= 9) g.appendChild(svgEl('text', { x: n.x, y: n.y + n.rad * 0.18, 'text-anchor': 'middle', class: 's-initials',
+      'font-size': Math.max(7, n.rad * 0.55), 'aria-hidden': 'true' }, initials(c.name)));
+    if (href) {
+      const img = svgEl('image', { href: href, x: n.x - n.rad, y: n.y - n.rad, width: n.rad * 2, height: n.rad * 2,
+        'clip-path': 'url(#' + id + ')', preserveAspectRatio: 'xMidYMid slice', class: 's-logo', decoding: 'async' });
+      img.addEventListener('load', () => img.classList.add('loaded'));
+      img.addEventListener('error', () => img.remove());
+      g.appendChild(img);
+    }
+    if (fundName && (c.fund_backed || c.fund_backed_later)) {
+      const br = Math.max(3, Math.min(6, n.rad * 0.3)), ba = -Math.PI / 4;
+      g.appendChild(svgEl('circle', { cx: n.x + n.rad * Math.cos(ba), cy: n.y + n.rad * Math.sin(ba), r: br,
+        class: 's-badge' + (c.fund_backed ? '' : ' late') }));
+    }
+    n.g = g;
+    bubbles.appendChild(g);
+  });
+
+  function apply(targets) {
+    nodes.forEach(function (n) {
+      const t = targets.get(n) || { dx: 0, dy: 0, k: 1, dim: targets.dimRest || false };
+      const was = n.state;
+      if (t.dx !== was.dx || t.dy !== was.dy || t.k !== was.k) {
+        const still = !t.dx && !t.dy && t.k === 1;
+        n.g.style.transform = still ? '' : 'translate(' + t.dx + 'px,' + t.dy + 'px) scale(' + t.k + ')';
+        n.hit.setAttribute('cx', n.x + t.dx); n.hit.setAttribute('cy', n.y + t.dy); n.hit.setAttribute('r', n.rad * t.k + gap / 2);
+      }
+      if (t.dim !== was.dim) n.g.classList.toggle('dim', t.dim);
+      if (!!t.lit !== !!was.lit) n.g.classList.toggle('lit', !!t.lit);
+      n.state = t;
+    });
+  }
+
+  // Grown bubbles would sit under faded neighbours drawn later, so resting ones move to the top before they grow
+  function raise(list) {
+    const resting = list.filter((n) => !n.state.dx && !n.state.dy && n.state.k === 1);
+    if (!resting.length) return;
+    resting.forEach((n) => bubbles.appendChild(n.g));
+    getComputedStyle(resting[0].g).transform;
+  }
+
+  function focusBubble(h) {
+    const grown = h.rad * 1.5, reach = grown * 2 + 2 * maxRad * scale;
+    const near = nodes.filter((n) => n !== h && Math.hypot(n.x - h.x, n.y - h.y) - n.rad < reach)
+      .map((n, i) => ({ n: n, i: i, x: n.x, y: n.y, r: n.rad }));
+    separate(near, { x: h.x, y: h.y, r: grown });
+    raise([h]);
+    const targets = new Map([[h, { dx: 0, dy: 0, k: 1.5, dim: false, lit: true }]]);
+    near.forEach(function (p) {
+      const dx = p.x - p.n.x, dy = p.y - p.n.y;
+      if (Math.abs(dx) + Math.abs(dy) >= 0.3) targets.set(p.n, { dx: dx, dy: dy, k: 1, dim: false });
+    });
+    apply(targets);
+  }
+
+  function focusGroup(uuids) {
+    const members = uuids.map((u) => byUuid.get(u)).filter(Boolean);
+    const k = members.length > 120 ? 1.1 : members.length > 40 ? 1.2 : 1.4;
+    const items = members.map((n, i) => ({ n: n, i: i, x: n.x, y: n.y, r: n.rad * k }));
+    separate(items, null);
+    raise(members);
+    const targets = new Map();
+    targets.dimRest = true;
+    items.forEach((p) => targets.set(p.n, { dx: p.x - p.n.x, dy: p.y - p.n.y, k: k, dim: false, lit: true }));
+    apply(targets);
+  }
+
+  // Leaving one bubble for another retargets mid-flight instead of snapping back to rest first
+  let pending, pinned = null, group = null;
+  const rest = () => (pinned ? focusGroup(pinned) : apply(new Map()));
+  nodes.forEach(function (n) {
+    n.hit = svgEl('circle', { cx: n.x, cy: n.y, r: n.rad + gap / 2, class: 's-hit', 'data-uuid': n.c.uuid });
+    n.hit.addEventListener('mouseenter', () => { clearTimeout(pending); if (!group) pending = setTimeout(() => focusBubble(n), 90); });
+    n.hit.addEventListener('mousemove', (e) => skyTip(e, n.c));
+    n.hit.addEventListener('mouseleave', () => { hideSkyTip(); clearTimeout(pending); if (!group) pending = setTimeout(rest, 110); });
+    n.hit.addEventListener('click', () => openSkyCompany(n.c));
+    hits.appendChild(n.hit);
+  });
+  root.replaceChildren(s);
+
+  function sideItem(opts) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'sky-item';
+    btn.innerHTML = opts.html;
+    const show = () => { clearTimeout(pending); group = opts.uuids; focusGroup(opts.uuids); };
+    const hide = () => { group = null; rest(); };
+    btn.addEventListener('mouseenter', show);
+    btn.addEventListener('focus', show);
+    btn.addEventListener('mouseleave', hide);
+    btn.addEventListener('blur', hide);
+    btn.addEventListener('click', opts.onClick || function () {
+      pinned = pinned === opts.uuids ? null : opts.uuids;
+      document.querySelectorAll('#skyLegend .sky-item').forEach((b) => b.classList.toggle('on', b === btn && !!pinned));
+      if (!pinned) rest();
+    });
+    return btn;
+  }
+
+  const b = d.outcome_breakdown, total = d.unique_companies;
+  const inGroup = (key) => valued.filter((c) => skyOutcome(c) === key).map((c) => c.uuid);
+  const counts = { uni: b.billion_plus, b: b.series_b_plus, a: b.series_a_only, none: b.no_later_round };
+  const legend = $('skyLegend');
+  legend.replaceChildren();
+  legend.insertAdjacentHTML('beforeend', '<div class="chart-h">How far they got</div>');
+  ['uni', 'b', 'a', 'none'].forEach(function (key) {
+    legend.appendChild(sideItem({ uuids: inGroup(key), html:
+      '<span class="sw" style="background:' + SKY_SWATCH[key] + '"></span>' +
+      '<span class="lbl">' + esc(SKY_LABEL[key]) + '<small>' + Math.round(100 * counts[key] / total) + '% of the group' +
+        (d.baseline ? ', market ' + Math.round(d.baseline.breakdown_pct[BREAKDOWN_KEY[key]]) + '%' : '') + '</small></span>' +
+      '<span class="k">' + counts[key].toLocaleString() + '</span>' }));
+  });
+  if (fundName) {
+    const at = valued.filter((c) => c.fund_backed).map((c) => c.uuid), later = valued.filter((c) => c.fund_backed_later).map((c) => c.uuid);
+    if (at.length) legend.appendChild(sideItem({ uuids: at, html: '<span class="sw" style="background:var(--ink);width:8px;height:8px"></span><span class="lbl">' + esc(fundName) + ' backed at seed</span><span class="k">' + at.length + '</span>' }));
+    if (later.length) legend.appendChild(sideItem({ uuids: later, html: '<span class="sw" style="background:var(--miss);width:8px;height:8px"></span><span class="lbl">' + esc(fundName) + ' came in later</span><span class="k">' + later.length + '</span>' }));
+  }
+  legend.insertAdjacentHTML('beforeend', '<div class="sky-side-note">Faded bubbles: the valuation is a Dealroom estimate.' +
+    (unvalued ? ' ' + unvalued.toLocaleString() + ' companies have no valuation on file and are counted here but not drawn.' : '') + '</div>');
+
+  const firms = $('skyFirms'), ranked = ((d.leaderboard && d.leaderboard.ranked) || []).slice()
+    .sort((x, y) => (y.winners - x.winners) || (y.companies - x.companies)).slice(0, 8);
+  firms.replaceChildren();
+  firms.insertAdjacentHTML('beforeend', '<div class="chart-h">Who backed the winners</div>');
+  if (!ranked.length) {
+    firms.insertAdjacentHTML('beforeend', '<div class="sky-side-note">No venture firm is recorded on enough of these rounds to rank.</div>');
+  }
+  const drawn = (f) => f.company_uuids.filter((u) => byUuid.has(u)).length;
+  ranked.forEach(function (f, i) {
+    firms.appendChild(sideItem({
+      uuids: f.company_uuids.filter((u) => byUuid.has(u)),
+      onClick: () => selectFund(f.name),
+      html: '<span class="rk">' + (i + 1) + '</span><span class="lbl">' + esc(f.name) + '<small>' + f.winners + ' ' + (f.winners === 1 ? 'winner' : 'winners') + ' from ' + f.companies + ' picks' +
+        (drawn(f) < f.companies ? ', ' + drawn(f) + ' shown' : '') + '</small></span>' +
+        '<span class="k">' + f.winners + '</span>',
+    }));
+  });
+  if (ranked.length) firms.insertAdjacentHTML('beforeend', '<div class="sky-side-note">Winners: picks that reached Series B or $1bn+. ' +
+    'Venture firms recorded on the matched rounds, which Dealroom lists for about half of rounds. Click a firm for its coverage.</div>');
+
+  $('skyNote').textContent = 'Each bubble is a company, sized by its valuation today and packed from the most valuable at the centre outwards. ' +
+    'Hover a bubble for its figures, or a row on either side to light up those companies. Click a company for its round-by-round record.';
+}
+
+let skyResize;
+window.addEventListener('resize', function () {
+  clearTimeout(skyResize);
+  skyResize = setTimeout(() => { if (skyData) renderConstellation(skyData); }, 150);
+});
+
+/* ---------------- section 2: the journeys ---------------- */
+function renderJourneys(d, fundName) {
+  const matchedStage = (d.inputs && d.inputs.round_type) || 'Seed';
+  const winners = (d.top_10_winners || []).filter((w) => (w.journey || []).length).slice(0, 5);
+  reveal('sec2');
+  const top = winners[0];
+  // The seed amount is sometimes missing on Dealroom (Teya's is); say so by
+  // leaving it out rather than printing a made-up figure.
+  $('sec2Take').innerHTML = top && top.latest_valuation
+    ? '<b>' + esc(top.name) + '</b> raised ' + (top.matched_round_amount ? 'a ' + money(top.matched_round_amount) + ' ' : 'a ') +
+      'seed in ' + esc(String(top.matched_round_date).split('-')[0]) +
+      '. It is valued at <b>' + money(top.latest_valuation) + '</b> today.'
+    : '';
+  if (!winners.length) {
+    $('journeys').innerHTML =
+      '<p style="color:var(--ink-3);margin-top:1.5rem">No round histories available for this cohort.</p>';
+    return;
+  }
+  $('journeys').innerHTML = winners.map(function (w) {
+    const stops = buildTrack(w.journey, w.matched_round_date, matchedStage);
+    const entryYear = w.fund_backed_later ? w.fund_entry_year : null;
+    const entryRound = w.fund_backed_later ? w.fund_entry_round : null;
+    const chips = stops.map(function (s, i) {
+      const isLast = i === stops.length - 1;
+      const marksEntry = fundName && entryRound && s.label === entryRound && s.year === entryYear;
+      return '<div class="stop' + (isLast ? ' stop-big' : '') + (s.matched ? ' stop-matched' : '') + '">' +
+        '<div class="stop-r">' + esc(SHORT_ROUND[s.label] || s.label || '—') + '</div>' +
+        '<div class="stop-y num">' + esc(s.year || '—') + '</div>' +
+        '<div class="stop-a num">' + money(s.amount) + '</div>' +
+        (s.matched ? '<div class="stop-matched-tag">your thesis</div>' : '') +
+        (marksEntry ? '<div class="stop-fund">' + esc(fundName) + ' in</div>' : '') +
+      '</div>';
+    }).join('');
+    return '<div class="journey" id="journey-' + esc(w.uuid) + '">' +
+      '<div class="journey-head">' +
+        '<div class="journey-name">' + esc(w.name) +
+          (w.domain ? '<span class="journey-dom">' + esc(w.domain) + '</span>' : '') + '</div>' +
+        '<div class="journey-now">' + (w.is_exited ? 'Exited · ' : 'Valued today ') +
+          '<b>' + money(w.latest_valuation) + '</b></div>' +
+      '</div>' +
+      '<div class="track">' + chips + '</div>' +
+    '</div>';
+  }).join('');
+}
+
+/* ---------------- section 3: coverage ---------------- */
+/* Copper-style timeline: every equity round, the thesis round marked, the
+   point the fund came in marked, today's valuation at the end. */
+function lateTimeline(c, fundName, matchedStage) {
+  const stops = buildTrack(c.journey, c.matched_round_date, matchedStage);
+  const nodes = stops.map(function (s) {
+    const isFund = s.label === c.fund_entry_round && s.year === c.fund_entry_year;
+    return '<div class="tl-node' + (s.matched ? ' t-match' : '') + (isFund ? ' t-fund' : '') + '">' +
+      '<div class="tl-r">' + esc(SHORT_ROUND[s.label] || s.label) + '</div>' +
+      '<div class="tl-y num">' + esc(s.year) + '</div>' +
+      '<div class="tl-a num">' + money(s.amount) + '</div>' +
+      (s.matched ? '<div class="tl-tag">Your thesis</div>' : '') +
+      (isFund ? '<div class="tl-tag">' + esc(fundName) + ' comes in</div>' : '') +
+    '</div>';
+  }).join('');
+  return '<div class="tl">' + nodes +
+    '<div class="tl-node t-now"><div class="tl-r">Today</div><div class="tl-a num">' + money(c.latest_valuation) + '</div></div></div>';
+}
+
+function renderCoverage(d, fundName) {
+  const gotAway = d.ones_that_got_away || [];
+  const scoring = d.scoring_companies_total === undefined ? gotAway.length : d.scoring_companies_total;
+  const backed = d.fund_backed_at_matched_total || 0;
+  const late = fundName ? (d.found_too_late || []) : [];
+  const matchedStage = (d.inputs && d.inputs.round_type) || 'Seed';
+  reveal('sec3');
+
+  if (!fundName) {
+    $('sec3Title').textContent = 'The ones that got away';
+    $('sec3Take').textContent = scoring.toLocaleString() + ' companies from this cohort went on to score. Name a fund to see how many it backed.';
+    $('sec3Sub').textContent = '';
+    $('coverStat').textContent = scoring.toLocaleString();
+    $('coverCaption').textContent = 'companies in this cohort scored above zero';
+    $('coverDots').innerHTML = dotsHtml([{ n: scoring, cls: '' }]);
+    $('coverLegend').innerHTML = '';
+    $('backedH').textContent = '';
+    $('backedList').innerHTML = '';
+    $('tooLateBox').innerHTML = '';
+  } else {
+    const missed = Math.max(scoring - backed - late.length, 0);
+    $('sec3Title').textContent = 'What ' + fundName + ' caught';
+    $('sec3Take').innerHTML = esc(fundName) + ' backed <b>' + backed + '</b> of the ' + scoring.toLocaleString() +
+      ' companies that went on to score' +
+      (late.length ? ', and reached <span class="miss">' + late.length + ' more</span> a round too late.' : '.');
+    $('sec3Sub').textContent =
+      'Read from the investor side of Dealroom’s record rather than the partial investor list on each round — ' +
+      'so "didn’t back it" means Dealroom holds no position for ' + fundName + ', not merely that the round’s investors went unrecorded.';
+    $('coverStat').innerHTML = backed + ' <small>of ' + scoring.toLocaleString() + '</small>';
+    $('coverCaption').textContent = 'scoring companies backed at the seed round';
+    const parts = [
+      { n: backed,      cls: 'd-in',   label: 'backed at seed' },
+      { n: late.length, cls: 'd-late', label: 'came in a round later' },
+      { n: missed,      cls: '',       label: 'no position on file' },
+    ];
+    $('coverDots').innerHTML = dotsHtml(parts);
+    $('coverLegend').innerHTML = legendHtml(parts, 0);
+    $('backedH').textContent = 'Backed at seed';
+    $('backedList').innerHTML = (d.fund_backed_companies || []).map(function (c) {
+      return '<div><span class="co-name">' + esc(c.name) + '</span>' +
+        '<span class="num" style="color:var(--ink-2)">' + money(c.latest_valuation) + '</span></div>';
+    }).join('');
+
+    if (late.length) {
+      const h = late[0];
+      const others = late.slice(1).map(function (x) {
+        return esc(x.name) + ' (' + esc(x.fund_entry_round) + ')';
+      }).join(', ');
+      $('tooLateBox').innerHTML = '<div class="late-box">' +
+        '<div class="pull">' + esc(fundName) + ' did back <b>' + esc(h.name) + '</b> — ' +
+          'at ' + esc(h.fund_entry_round) + ' in ' + esc(h.fund_entry_year) + '. Not at the seed round in this cohort.</div>' +
+        lateTimeline(h, fundName, matchedStage) +
+        '<div class="pull-note">' + esc(h.name) + ' is worth ' + money(h.latest_valuation) + ' today. ' +
+          (late.length > 1
+            ? 'The same pattern shows up in ' + (late.length - 1) + ' other ' +
+              (late.length === 2 ? 'company' : 'companies') + ' here: ' + others + '.'
+            : 'It is the only company in this cohort ' + esc(fundName) + ' reached one round late.') +
+        '</div></div>';
+    } else {
+      $('tooLateBox').innerHTML = '<div class="pull-note" style="margin-top:1.5rem">Dealroom holds no record of ' + esc(fundName) +
+        ' entering any of these companies at a later round either.</div>';
+    }
+  }
+
+  $('gotAwayTable').innerHTML =
+    '<thead><tr><th>' + (fundName ? 'Missed at seed' : 'Top of the cohort') +
+      '</th><th>Seed round</th><th>Best stage reached</th><th class="r">Valued today</th></tr></thead>' +
+    '<tbody>' + gotAway.slice(0, 8).map(function (w) {
+      return '<tr><td class="co-name">' + esc(w.name) + '</td>' +
+        '<td class="num">' + esc(w.matched_round_date) + ' · ' + money(w.matched_round_amount) + '</td>' +
+        '<td>' + (w.is_exited ? 'Exited' : w.reached_series_b_plus ? 'Series B or later'
+                  : w.reached_series_a ? 'Series A' : 'No later round') + '</td>' +
+        '<td class="r num val-up">' + money(w.latest_valuation) + '</td></tr>';
+    }).join('') + '</tbody>';
+}
+
+/* ---------------- section 3: who backed this best ---------------- */
+let currentThesis = null;   // the thesis last run live, so a firm click can re-ask Dealroom about it
+let demoFund = null;        // in demo mode only this firm has saved coverage data
+
+function hideCoverage() {
+  $('sec3').classList.add('hidden');
+  $('navCover').style.display = 'none';
+}
+function showCoverage() {
+  $('sec3').classList.remove('hidden');
+  $('navCover').style.display = '';
+}
+const OUTCOME_CLS = { unicorn: 'd-uni', series_b_plus: 'd-b', series_a: 'd-a', none: '' };
+
+function renderLeaderboard(d, selected, canPick) {
+  const lb = d.leaderboard;
+  reveal('secL');
+  if (!lb || !lb.top.length) {
+    $('secLTake').textContent = '';
+    $('secLSub').textContent = '';
+    $('boardTable').innerHTML = '<tbody><tr><td style="color:var(--ink-3)">No venture firm backed enough companies in this cohort to rank.</td></tr></tbody>';
+    $('boardNote').textContent = '';
+    return;
+  }
+  const lead = lb.top[0];
+  $('secLTake').innerHTML = '<b>' + esc(lead.name) + '</b> leads: ' + lead.companies + ' companies, ' +
+    '<b>' + Math.round(lead.pct_reached_series_a_or_later) + '%</b> reached Series A or later, against ' +
+    Math.round(lb.cohort_pct_reached_series_a_or_later) + '% for the whole cohort.';
+  $('secLSub').textContent = lb.firms_ranked + ' venture firms backed at least ' + lb.min_companies +
+    ' companies in this cohort. Ranked by the combined outcome score of the companies each one backed' +
+    (canPick ? '. Click a firm to see what it missed.' : '.');
+  const top = Math.max.apply(null, lb.top.map((r) => r.total_score).concat([1]));
+  $('boardTable').innerHTML =
+    '<thead><tr><th class="rank"></th><th>Firm</th><th>Companies backed</th>' +
+    '<th class="r">Reached A+</th><th class="r">Unicorns</th><th class="r" style="min-width:7rem">Score</th></tr></thead>' +
+    '<tbody>' + lb.top.map(function (r, i) {
+      const sel = selected && r.name === selected;
+      const dots = r.outcomes.map((o) => '<span class="dot ' + OUTCOME_CLS[o] + '"></span>').join('');
+      return '<tr class="' + (canPick ? 'pick' : '') + (sel ? ' sel' : '') + '" data-firm="' + esc(r.name) + '">' +
+        '<td class="rank">' + (i + 1) + '</td>' +
+        '<td><span class="co-name">' + esc(r.name) + '</span>' + (canPick ? '<span class="go">see what it missed →</span>' : '') +
+          (r.best.length ? '<div class="best">' + r.best.map((b) => esc(b.name)).join(', ') + '</div>' : '') + '</td>' +
+        '<td><div class="mini">' + dots + '</div><div class="best">' + r.companies + ' companies</div></td>' +
+        '<td class="r num">' + Math.round(r.pct_reached_series_a_or_later) + '%</td>' +
+        '<td class="r num">' + r.unicorns + '</td>' +
+        '<td class="r num"><b>' + r.total_score.toLocaleString() + '</b>' +
+          '<div class="sbar"><i style="width:' + Math.max(4, Math.round(100 * r.total_score / top)) + '%"></i></div></td></tr>';
+    }).join('') + '</tbody>';
+  $('boardNote').textContent =
+    'Only venture capital firms, as Dealroom classifies them; individuals, accelerators and crowdfunding platforms are left out. ' +
+    'Built from the investors Dealroom has recorded on these rounds, which is not every round, so read it as best on the record. ' +
+    'Every investor named on a round gets full credit for it.';
+  if (canPick) {
+    Array.prototype.forEach.call(document.querySelectorAll('#boardTable tr.pick'), function (row) {
+      row.addEventListener('click', function () { selectFund(row.dataset.firm); });
+    });
+  }
+}
+
+function markSelected(name) {
+  Array.prototype.forEach.call(document.querySelectorAll('#boardTable tr.pick'), function (row) {
+    row.classList.toggle('sel', row.dataset.firm === name);
+  });
+}
+
+async function selectFund(name) {
+  markSelected(name);
+  let d;
+  if (demoFund !== null) {                         // demo mode: saved data, no live calls
+    if (name !== demoFund) { setStatus('Demo mode has saved results for ' + demoFund + ' only.', false); return; }
+    d = window.DEMO_DATA.backtest;
+  } else {
+    if (!currentThesis) return;
+    setStatus('Checking ' + name + ' against Dealroom…', true);
+    try {
+      const res = await fetch('/api/backtest', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(Object.assign({}, currentThesis, { fund_name: name })),
+      });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.statusText);
+      d = await res.json();
+    } catch (e) { setStatus('Could not check ' + name + ' — ' + e.message, false); return; }
+    setStatus('', false);
+  }
+  showCoverage();
+  renderCoverage(d, name);
+  if (d.companies && d.companies.length) { skyData = d; renderConstellation(d); }
+  $('sec3').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+/* ---------------- section 4: momentum ---------------- */
+function renderMomentum(d) {
+  const results = d.top_10_by_signal || [];
+  reveal('sec4');
+  const months = d.months_back || 18;
+  $('sec4Take').innerHTML = d.unique_companies && results.length
+    ? d.unique_companies.toLocaleString() + ' companies raised a matching seed in the last ' + months +
+      ' months. These <b>' + results.length + '</b> are the ones Dealroom rates highest today.'
+    : '';
+  $('sec4Sub').textContent = d.unique_companies
+    ? 'Ranked by Dealroom\u2019s own signal rating (0 to 100), its model of a startup\u2019s prospects. Each one is checked to confirm the round really is ' +
+      'an early raise, not a later round filed as seed. Team size and web traffic are shown for context.'
+    : '';
+  $('momentumTable').innerHTML = results.length
+    ? '<thead><tr><th class="rank"></th><th>Company</th><th>Dealroom signal</th><th>Team</th><th>Web traffic</th><th class="r">Seed</th></tr></thead>' +
+      '<tbody>' + results.map(function (c, i) {
+        return '<tr><td class="rank">' + (i + 1) + '</td>' +
+          '<td class="co-name">' + esc(c.name) + '</td>' +
+          '<td style="width:18%"><div style="display:flex;align-items:center;gap:.625rem"><b class="num">' + Math.round(c.signal_rating) + '</b>' +
+            '<div class="mbar" style="flex:1"><i style="width:' + Math.max(2, Math.round(c.signal_rating)) + '%"></i></div></div></td>' +
+          '<td class="why">' + (c.team ? esc(c.team) : '<span class="mute">not on file</span>') + '</td>' +
+          '<td class="why">' + (c.traffic ? esc(c.traffic) : '<span class="mute">no reliable data</span>') + '</td>' +
+          '<td class="r num">' + (c.seed_round_amount >= 1000 ? money(c.seed_round_amount) : '<span class="mute">not disclosed</span>') + '</td></tr>';
+      }).join('') + '</tbody>'
+    : '<tbody><tr><td style="color:var(--ink-3)">No recent matches with a Dealroom signal rating in this window.</td></tr></tbody>';
+}
+
+/* ---------------- pipeline ---------------- */
+function buildLabels(thesis, parsed) {
+  const where = parsed.location_label ? String(parsed.location_label).split(',')[0] : 'This market';
+  const tags = parsed.tag_labels && parsed.tag_labels.length ? parsed.tag_labels.join(' and ') : 'all sectors';
+  const round = String(thesis.round_type).toLowerCase();
+  return {
+    title: where + ' ' + tags.toLowerCase() + ': ' + round + ', ' + thesis.year_from + '–' + thesis.year_to,
+    sub: 'Every ' + round + ' round Dealroom has on file matching this thesis, and what became of the companies that raised one.',
+  };
+}
+
+async function runPipeline(thesis, fundName, labels) {
+  ['sec1', 'sec2', 'secL', 'sec3', 'sec4'].forEach((id) => $(id).classList.remove('visible'));
+  hideCoverage();
+  setStatus('Pulling the cohort and today’s matches, live from Dealroom…', true);
+
+  // Backtest and momentum are independent -- fire both now rather than
+  // waiting for one to finish. This is what keeps a cold run under 20s.
+  const backtestPromise = fetch('/api/backtest', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(Object.assign({}, thesis, { fund_name: fundName || null })),
+  }).then(async function (res) {
+    if (!res.ok) {
+      const e = await res.json().catch(() => ({}));
+      throw new Error(e.detail || res.statusText);
+    }
+    return res.json();
+  });
+
+  // Momentum is the bonus act -- a failure here must not undo sections 1-3.
+  const momentumPromise = fetch('/api/momentum', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ location_id: thesis.location_id, tag_ids: thesis.tag_ids, months_back: 18 }),
+  }).then((res) => (res.ok ? res.json() : Promise.reject())).catch(() => null);
+
+  try {
+    const d = await backtestPromise;
+    currentThesis = thesis;
+    demoFund = null;
+    renderCohort(d, labels);
+    setTimeout(() => renderJourneys(d, fundName), 420);
+    setTimeout(() => renderLeaderboard(d, fundName, true), 840);
+    if (fundName) setTimeout(() => { showCoverage(); renderCoverage(d, fundName); }, 1100);
+    $('footerNote').textContent = d.cohort_filter;
+  } catch (e) {
+    setStatus('Backtest failed — ' + e.message, false);
+    return;
+  }
+
+  const m = await momentumPromise;
+  if (m) setTimeout(() => renderMomentum(m), 1400);
+  setStatus('', false);
+}
+
+async function startRun(thesisText, thesisOverride, fundOverride, labelOverride) {
+  // Public site: no backend, so any button press shows the saved demo instead.
+  if (!['localhost', '127.0.0.1', ''].includes(location.hostname) && window.DEMO_DATA) {
+    runDemoMode();
+    return;
+  }
+  $('runBtn').disabled = true;
+  if ($('fallbackRunBtn')) $('fallbackRunBtn').disabled = true;
+
+  let thesis = thesisOverride, fundName = fundOverride, labels = labelOverride;
+
+  if (!thesis) {
+    setStatus('Reading your thesis…', true);
+    let parsed;
+    try {
+      const res = await fetch('/api/parse-thesis', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ thesis: thesisText }),
+      });
+      parsed = await res.json();
+    } catch (e) {
+      parsed = { success: false, reason: 'Could not reach the server.' };
+    }
+
+    if (parsed.success) {
+      thesis = { location_id: parsed.location_id, tag_ids: parsed.tag_ids,
+        round_type: parsed.round_type, year_from: parsed.year_from, year_to: parsed.year_to };
+      fundName = parsed.fund_name;
+      labels = buildLabels(thesis, parsed);
+      $('fallbackBox').classList.add('hidden');
+    } else {
+      setStatus('', false);
+      $('fallbackReason').textContent = parsed.reason || 'Could not read that thesis.';
+      if (parsed.fallback_options) {
+        populateSelect($('locationSelect'), parsed.fallback_options.locations);
+        populateSelect($('industrySelect'), parsed.fallback_options.industries);
+      }
+      populateYearsSelect();
+      $('fallbackBox').classList.remove('hidden');
+      $('runBtn').disabled = false;
+      $('fallbackRunBtn').disabled = false;
+      return;
+    }
+  }
+
+  await runPipeline(thesis, fundName, labels);
+  $('runBtn').disabled = false;
+  if ($('fallbackRunBtn')) $('fallbackRunBtn').disabled = false;
+}
+
+function populateYearsSelect() {
+  const sel = $('yearsSelect');
+  sel.innerHTML = '';
+  for (let y = 2015; y <= 2025; y += 2) {
+    const o = document.createElement('option');
+    o.value = JSON.stringify({ from: y, to: y + 1 });
+    o.textContent = y + '–' + (y + 1);
+    if (y === 2019) o.selected = true;
+    sel.appendChild(o);
+  }
+}
+function populateSelect(sel, options) {
+  sel.innerHTML = '';
+  (options || []).forEach(function (o) {
+    const opt = document.createElement('option');
+    opt.value = o.id;
+    opt.textContent = o.label + (o.family && o.family !== 'industry' ? ' (' + o.family + ')' : '');
+    sel.appendChild(opt);
+  });
+}
+
+$('runBtn').addEventListener('click', function () {
+  const t = $('thesisInput').value.trim();
+  if (!t) { $('thesisInput').focus(); return; }
+  startRun(t, null, null, null);
+});
+$('thesisInput').addEventListener('keydown', function (e) {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); $('runBtn').click(); }
+});
+$('fallbackRunBtn').addEventListener('click', function () {
+  const years = JSON.parse($('yearsSelect').value);
+  const loc = $('locationSelect'), ind = $('industrySelect');
+  const thesis = { location_id: parseInt(loc.value, 10), tag_ids: [parseInt(ind.value, 10)],
+    round_type: 'Seed', year_from: years.from, year_to: years.to };
+  const labels = buildLabels(thesis, {
+    location_label: loc.options[loc.selectedIndex].textContent,
+    tag_labels: [ind.options[ind.selectedIndex].textContent],
+  });
+  startRun(null, thesis, null, labels);
+});
+
+/* Demo mode: ?demo=1 renders pre-captured, verified results with zero live
+   Dealroom calls -- for when the venue wifi can't be trusted. */
+function runDemoMode() {
+  if (!window.DEMO_DATA) {
+    setStatus('Demo data missing — running live instead.', false);
+    startRun(DEMO_THESIS_TEXT, null, null, null);
+    return;
+  }
+  const parsed = window.DEMO_DATA.parsed;
+  const backtest = window.DEMO_DATA.backtest;
+  const momentum = window.DEMO_DATA.momentum;
+  $('thesisInput').value = DEMO_THESIS_TEXT;
+  $('fallbackBox').classList.add('hidden');
+  const thesis = { location_id: parsed.location_id, tag_ids: parsed.tag_ids,
+    round_type: parsed.round_type, year_from: parsed.year_from, year_to: parsed.year_to };
+  const labels = buildLabels(thesis, parsed);
+  setStatus('Demo mode — saved results, no live calls', false);
+  demoFund = window.DEMO_DATA.selected_fund || null;
+  renderCohort(backtest, labels);
+  setTimeout(() => renderJourneys(backtest, null), 420);
+  setTimeout(() => renderLeaderboard(backtest, demoFund, true), 840);
+  if (demoFund) setTimeout(() => { showCoverage(); renderCoverage(backtest, demoFund); }, 1100);
+  if (momentum) setTimeout(() => renderMomentum(momentum), 1400);
+  $('footerNote').textContent = backtest.cohort_filter;
+}
+
+$('thesisInput').value = DEMO_THESIS_TEXT;
+// On the public site there is no backend, so always run the saved demo.
+const isLocal = ['localhost', '127.0.0.1', ''].includes(location.hostname);
+if (!isLocal || new URLSearchParams(location.search).get('demo') === '1') runDemoMode();
+</script>
+</body>
+</html>
